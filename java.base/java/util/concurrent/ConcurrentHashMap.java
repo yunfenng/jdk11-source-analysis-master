@@ -504,12 +504,14 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * bounds for power of two table sizes, and is further required
      * because the top two bits of 32bit hash fields are used for
      * control purposes.
+     * 散列表数组最大容量
      */
     private static final int MAXIMUM_CAPACITY = 1 << 30;
 
     /**
      * The default initial table capacity.  Must be a power of 2
      * (i.e., at least 1) and at most MAXIMUM_CAPACITY.
+     * 散列表默认容量
      */
     private static final int DEFAULT_CAPACITY = 16;
 
@@ -522,6 +524,8 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
     /**
      * The default concurrency level for this table. Unused but
      * defined for compatibility with previous versions of this class.
+     * 并发级别，jdk1.7遗留下来的，1.8只在初始化时用了一下
+     * 不代表并发级别
      */
     private static final int DEFAULT_CONCURRENCY_LEVEL = 16;
 
@@ -531,6 +535,7 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * actual floating point value isn't normally used -- it is
      * simpler to use expressions such as {@code n - (n >>> 2)} for
      * the associated resizing threshold.
+     * 负载因子 在1.8中ConcurrentHashMap是固定值
      */
     private static final float LOAD_FACTOR = 0.75f;
 
@@ -541,6 +546,7 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * than 2, and should be at least 8 to mesh with assumptions in
      * tree removal about conversion back to plain bins upon
      * shrinkage.
+     * 树化阈值，指定桶位 链表长度达到8时，可能发生树化操作
      */
     static final int TREEIFY_THRESHOLD = 8;
 
@@ -548,6 +554,7 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * The bin count threshold for untreeifying a (split) bin during a
      * resize operation. Should be less than TREEIFY_THRESHOLD, and at
      * most 6 to mesh with shrinkage detection under removal.
+     * 红黑树转为链表的阈值
      */
     static final int UNTREEIFY_THRESHOLD = 6;
 
@@ -556,6 +563,7 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * (Otherwise the table is resized if too many nodes in a bin.)
      * The value should be at least 4 * TREEIFY_THRESHOLD to avoid
      * conflicts between resizing and treeification thresholds.
+     * 联合 TREEIFY_THRESHOLD 控制桶位是否树化，只有当 table 数组长度达到64 且某个桶位中链表长度达到8，才真正树化
      */
     static final int MIN_TREEIFY_CAPACITY = 64;
 
@@ -565,35 +573,43 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * serves as a lower bound to avoid resizers encountering
      * excessive memory contention.  The value should be at least
      * DEFAULT_CAPACITY.
+     * 线程迁移数据最小步长，控制线程迁移任务最小区间的一个值
      */
     private static final int MIN_TRANSFER_STRIDE = 16;
 
     /**
      * The number of bits used for generation stamp in sizeCtl.
      * Must be at least 6 for 32bit arrays.
+     * 扩容相关，计算扩容是生成的一个 标识戳
      */
     private static final int RESIZE_STAMP_BITS = 16;
 
     /**
      * The maximum number of threads that can help resize.
      * Must fit in 32 - RESIZE_STAMP_BITS bits.
+     * 65535 表示并发扩容最多线程数
      */
     private static final int MAX_RESIZERS = (1 << (32 - RESIZE_STAMP_BITS)) - 1;
 
     /**
      * The bit shift for recording size stamp in sizeCtl.
+     * 扩容相关
      */
     private static final int RESIZE_STAMP_SHIFT = 32 - RESIZE_STAMP_BITS;
 
-    /*
+    /**
      * Encodings for Node hash fields. See above for explanation.
      */
+    // 当node节点的hash值为-1 时，表示当前节点是FWD节点
     static final int MOVED     = -1; // hash for forwarding nodes
+    // 当node节点的hash值为-2 时，表示当前节点已经树化，且当前节点为TreeBin对象，TreeBin对象代理操作红黑树
     static final int TREEBIN   = -2; // hash for roots of trees
     static final int RESERVED  = -3; // hash for transient reservations
+    // 0x7fffffff -> 01111111111111111111111111111111 可以将一个负数通过位与运算后得到正数，但是不是取绝对值
     static final int HASH_BITS = 0x7fffffff; // usable bits of normal node hash
 
     /** Number of CPUS, to place bounds on some sizings */
+    // 当前系统的CPU数量
     static final int NCPU = Runtime.getRuntime().availableProcessors();
 
     /**
@@ -605,6 +621,7 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      *   key's hash code are used to choose the segment.
      * @serialField segmentShift int
      *   Shift value for indexing within segments.
+     * JDK1.8 序列化为了兼容jdk1.7 的ConcurrentHashMap保存的
      */
     private static final ObjectStreamField[] serialPersistentFields = {
         new ObjectStreamField("segments", Segment[].class),
