@@ -640,6 +640,7 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * exported).  Otherwise, keys and vals are never null.
      */
     static class Node<K,V> implements Map.Entry<K,V> {
+        // final 不可变, 线程安全
         final int hash;
         final K key;
         volatile V val;
