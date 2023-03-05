@@ -791,11 +791,13 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
     /**
      * The array of bins. Lazily initialized upon first insertion.
      * Size is always a power of two. Accessed directly by iterators.
+     * 散列表，长度一定是2的次方数
      */
     transient volatile Node<K,V>[] table;
 
     /**
      * The next table to use; non-null only while resizing.
+     * 扩容过程中，会将扩容中的新table 赋值给nextTable 保持引用，扩容结束后，这里会被设置为null
      */
     private transient volatile Node<K,V>[] nextTable;
 
@@ -803,6 +805,7 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * Base counter value, used mainly when there is no contention,
      * but also as a fallback during table initialization
      * races. Updated via CAS.
+     * LongAdder 中的baseCount 未发生竞争时 或者当前LongAdder处于加锁状态时，增量累加到baseCount中
      */
     private transient volatile long baseCount;
 
@@ -813,21 +816,34 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * when table is null, holds the initial table size to use upon
      * creation, or 0 for default. After initialization, holds the
      * next element count value upon which to resize the table.
+     * sizeCtl < 0
+     *  1. -1表示当前table正在初始化(有现成在创建table数组), 当前线程需要自旋等待
+     *  2. 表示当前map正在进行扩容 高16位表示: 扩容的标识戳 低16位表示: (1 + nThread) 当前参与并发扩容的线程数量
+     *
+     * sizeCtl = 0, 表示创建table数组时, 使用DEFAULT_CAPATCITY
+     * sizeCtl > 0
+     *  1. 如果table未初始化, 表示初始化大小
+     *  2. 如果table已经初始化, 表示下次扩容时的 触发条件(阈值)
      */
     private transient volatile int sizeCtl;
 
     /**
      * The next table index (plus one) to split while resizing.
+     * 扩容过程中, 记录当前进度. 所有线程都需要从transferIndex中分配区间任务, 去执行自己的任务
      */
     private transient volatile int transferIndex;
 
     /**
      * Spinlock (locked via CAS) used when resizing and/or creating CounterCells.
+     * LongAdder中的cellBusy 0-表示当前LongAdder对象无锁状态，1-表示当前LongAdder对象有锁状态
      */
     private transient volatile int cellsBusy;
 
     /**
      * Table of counter cells. When non-null, size is a power of 2.
+     * LongAdder中的cells数组，当baseCount发生竞争后，会创建cells数组
+     * 线程会通过计算hash值 取到自己的cell，将增量累加到指定的cell中
+     * 总数 = sum(cells) + baseCount
      */
     private transient volatile CounterCell[] counterCells;
 
@@ -6362,12 +6378,19 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
 
     // Unsafe mechanics
     private static final Unsafe U = Unsafe.getUnsafe();
+    /**表示sizeCtl属性在ConcurrentHashMap中的内存偏移地址*/
     private static final long SIZECTL;
+    /**表示transferIndex属性在ConcurrentHashMap中的内存偏移地址*/
     private static final long TRANSFERINDEX;
+    /**表示baseCount属性在ConcurrentHashMap中的内存偏移地址*/
     private static final long BASECOUNT;
+    /**表示cellsBusyIndex属性在ConcurrentHashMap中的内存偏移地址*/
     private static final long CELLSBUSY;
+    /**表示cellValue属性在ConcurrentHashMap中的内存偏移地址*/
     private static final long CELLVALUE;
+    /**表示数组的第一个元素的偏移地址*/
     private static final int ABASE;
+    /***/
     private static final int ASHIFT;
 
     static {
@@ -6384,9 +6407,16 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
             (CounterCell.class, "value");
 
         ABASE = U.arrayBaseOffset(Node[].class);
+        // 表示数组单元所占用的空间大小, scale 表示Node[]数组中每一个单元所占用的空间大小
         int scale = U.arrayIndexScale(Node[].class);
+        // 1 0000 & 0 1111 = 0
         if ((scale & (scale - 1)) != 0)
             throw new ExceptionInInitializerError("array index scale not a power of two");
+        // numberOfLeadingZeros() 这个方法返回当前数值转换为二进制后, 从高位到地位开始统计, 看有多少个0连续在一起
+        // 8 => 1000  31 - numberOfLeadingZeros(8) = 28
+        // 4 => 0100  31 - numberOfLeadingZeros(2) = 29
+        // ASHIFT = 31 - 29 = 2 ??
+        // ABASE + (5 << ASHIFT)
         ASHIFT = 31 - Integer.numberOfLeadingZeros(scale);
 
         // Reduce the risk of rare disastrous classloading in first call to
