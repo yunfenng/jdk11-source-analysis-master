@@ -710,6 +710,14 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * cheapest possible way to reduce systematic lossage, as well as
      * to incorporate impact of the highest bits that would otherwise
      * never be used in index calculations because of table bounds.
+     * 扰动算法
+     *           1100 0011 1010 0101 0001 1100 0001 1110
+     * 右移16位:  0000 0000 0000 0000 1100 0011 1010 0101
+     * 异或运算:  1100 0011 1010 0101 1101 1111 1011 1000
+     * ---------------------------------------------------
+     *           1100 0011 1010 0101 1101 1111 1011 1000
+     *           0111 1111 1111 1111 1111 1111 1111 1111
+     * 与运算:   0100 0011 1010 0101 1101 1111 1011 1000
      */
     static final int spread(int h) {
         return (h ^ (h >>> 16)) & HASH_BITS;
@@ -718,6 +726,15 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
     /**
      * Returns a power of two table size for the given desired capacity.
      * See Hackers Delight, sec 3.2
+     * 返回>=c的最小2的次方数
+     * c=28
+     * n=c-1=27 => 11011
+     * 11011 | 01101 => 11111
+     * 11111 | 00111 => 11111
+     * 11111 | 00001 => 11111
+     * 0001 1111 | 0000 0001 => 0001 1111
+     * 0000 0000 0001 1111 | 0000 0000 0000 0001 => 0000 0000 0001 1111
+     * => 11111 + 1 => 0010 0000 => 32
      */
     private static final int tableSizeFor(int c) {
         int n = -1 >>> Integer.numberOfLeadingZeros(c - 1);
@@ -2306,6 +2323,13 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
     /**
      * Returns the stamp bits for resizing a table of size n.
      * Must be negative when shifted left by RESIZE_STAMP_SHIFT.
+     * 16 -> 32
+     * numberOfLeadingZeros(16) => 1 0000 => 27 => 0000 0000 0001 1011
+     * (1 << (RESIZE_STAMP_BITS - 1)) => 1000 0000 0000 0000 => 65536
+     * --------------------------------------------------
+     * 0000 0000 0001 1011
+     * 1000 0000 0000 0000
+     * 1000 0000 0001 1011
      */
     static final int resizeStamp(int n) {
         return Integer.numberOfLeadingZeros(n) | (1 << (RESIZE_STAMP_BITS - 1));
