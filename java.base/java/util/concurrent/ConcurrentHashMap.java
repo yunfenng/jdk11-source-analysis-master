@@ -875,6 +875,7 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
 
     /**
      * Creates a new, empty map with the default initial table size (16).
+     * 延迟构建, 在put时创建, 默认大小时16
      */
     public ConcurrentHashMap() {
     }
@@ -949,6 +950,8 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
         long size = (long)(1.0 + (long)initialCapacity / loadFactor);
         int cap = (size >= (long)MAXIMUM_CAPACITY) ?
             MAXIMUM_CAPACITY : tableSizeFor((int)size);
+        // sizeCtl > 0
+        // 当前table未初始化时, sizeCtl表示初始化容量
         this.sizeCtl = cap;
     }
 
