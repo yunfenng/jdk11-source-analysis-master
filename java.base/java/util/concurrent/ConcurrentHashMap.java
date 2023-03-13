@@ -1062,17 +1062,30 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
 
     /** Implementation for put and putIfAbsent */
     final V putVal(K key, V value, boolean onlyIfAbsent) {
+        // 控制k 和 v 不能为null
         if (key == null || value == null) throw new NullPointerException();
+        // 通过spread方法，可以让高位也能参与进寻址运算
         int hash = spread(key.hashCode());
+        // binCount表示当前k-v 封装成node后插入到指定桶位后，在桶位中的所属链表的下标位置
+        // 0 表示当前桶位为null, node可以直接放着
+        // -2 表示当前桶位已经树化成了red-black tree
         int binCount = 0;
+        // tab 引用map对象的table
         for (Node<K,V>[] tab = table;;) {
+            // f 表示桶位的头结点
+            // n 表示散列表数组的长度
+            // i 表示key通过寻址运算后,得到的桶位下标
+            // fh 表示桶位头结点的hash值
             Node<K,V> f; int n, i, fh; K fk; V fv;
+            // CASE1：成立，表示当前map中的table尚未初始化
             if (tab == null || (n = tab.length) == 0)
                 tab = initTable();
+            // CASE2：i 表示key使用路由寻址算法得到key对应 table数组的下标位置，tabAt获取指定桶位的头结点 f
             else if ((f = tabAt(tab, i = (n - 1) & hash)) == null) {
                 if (casTabAt(tab, i, null, new Node<K,V>(hash, key, value)))
                     break;                   // no lock when adding to empty bin
             }
+            //
             else if ((fh = f.hash) == MOVED)
                 tab = helpTransfer(tab, f);
             else if (onlyIfAbsent // check first node without acquiring lock
