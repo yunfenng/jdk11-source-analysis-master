@@ -1085,14 +1085,16 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
                 if (casTabAt(tab, i, null, new Node<K,V>(hash, key, value)))
                     break;                   // no lock when adding to empty bin
             }
-            //
+            // CASE3：条件成立表示当前桶位的头结点 为 FWD结点，表示目前map正处于扩容过程中..
             else if ((fh = f.hash) == MOVED)
                 tab = helpTransfer(tab, f);
+            //
             else if (onlyIfAbsent // check first node without acquiring lock
                      && fh == hash
                      && ((fk = f.key) == key || (fk != null && key.equals(fk)))
                      && (fv = f.val) != null)
                 return fv;
+            // CASE4：当前桶位 可能是链表 也可能是 红黑树代理节点TreeBin
             else {
                 V oldVal = null;
                 synchronized (f) {
@@ -2353,22 +2355,46 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
 
     /**
      * Initializes table, using the size recorded in sizeCtl.
+     *
+     * sizeCtl < 0
+     *  1. -1表示当前table正在初始化(有现成在创建table数组), 当前线程需要自旋等待
+     *  2. 表示当前map正在进行扩容 高16位表示: 扩容的标识戳 低16位表示: (1 + nThread) 当前参与并发扩容的线程数量
+     * sizeCtl = 0, 表示创建table数组时, 使用DEFAULT_CAPATCITY
+     * sizeCtl > 0
+     *  1. 如果table未初始化, 表示初始化大小
+     *  2. 如果table已经初始化, 表示下次扩容时的 触发条件(阈值)
      */
     private final Node<K,V>[] initTable() {
+        // tab 表示 map.table引用
+        // sc 表示临时局部的sizeCtl的值
         Node<K,V>[] tab; int sc;
+        // 自旋 条件: table为null，当前散列表尚未初始化
         while ((tab = table) == null || tab.length == 0) {
             if ((sc = sizeCtl) < 0)
+                // 大概率时-1，表示其他线程正在进行创建table的过程，当前线程没有竞争到初始化table的锁
                 Thread.yield(); // lost initialization race; just spin
+            // 1. sizeCtl = 0, 表示创建table数组时, 使用DEFAULT_CAPATCITY
+            // 2. 如果table未初始化, 表示初始化大小
+            // 3. 如果table已经初始化, 表示下次扩容时的 触发条件(阈值)
             else if (U.compareAndSetInt(this, SIZECTL, sc, -1)) {
                 try {
+                    // 这里为什么又要判断？并发，防止其他线程已经初始化完毕，然后当前线程再次初始化..导致丢失数据
+                    // 条件成立：说明其他线程都没有进入过这个if块，当前线程就是具备初始化table权利了
                     if ((tab = table) == null || tab.length == 0) {
+                        // sc大于0 创建table时，使用sc的指定大小，否则使用 16 默认大小
                         int n = (sc > 0) ? sc : DEFAULT_CAPACITY;
                         @SuppressWarnings("unchecked")
                         Node<K,V>[] nt = (Node<K,V>[])new Node<?,?>[n];
+                        // 最终赋值给map.table
                         table = tab = nt;
+                        // n >>> 2  => 1/4 n   n - (1/4)n = (3/4)n => 0.75 * n
+                        // sc 0.75 n 表示下一次扩容时的触发条件
                         sc = n - (n >>> 2);
                     }
                 } finally {
+                    // 1. 如果table当前线程时第一次创建table的线程，sc表示 下一次扩容的阈值
+                    // 2. 表示当前线程并不是第一次创建map.table的线程，当前线程进入到else if 块时，将
+                    // sizeCtl设置为-1，那么这时需要将其修改为进入时的值。
                     sizeCtl = sc;
                 }
                 break;
