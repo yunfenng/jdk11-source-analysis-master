@@ -1082,6 +1082,11 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
                 tab = initTable();
             // CASE2：i 表示key使用路由寻址算法得到key对应 table数组的下标位置，tabAt获取指定桶位的头结点 f
             else if ((f = tabAt(tab, i = (n - 1) & hash)) == null) {
+                // 进入到CASE2代码块 前置条件 当前table数组 i 桶位时 null 时
+                // 使用CAS方式 设置 指定数组i桶位 为 new Node<K,V>(hash, key, value) 并且期望值是null
+                // cas操作成功 表示ok, 直接break for循环即可
+                // cas操作失败, 表示在当前线程之前, 有其他线程先一步向指定i桶位设置值了
+                // 当前线程只能再次进行自旋,去走其他逻辑
                 if (casTabAt(tab, i, null, new Node<K,V>(hash, key, value)))
                     break;                   // no lock when adding to empty bin
             }
