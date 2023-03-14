@@ -1090,8 +1090,11 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
                 if (casTabAt(tab, i, null, new Node<K,V>(hash, key, value)))
                     break;                   // no lock when adding to empty bin
             }
-            // CASE3：条件成立表示当前桶位的头结点 为 FWD结点，表示目前map正处于扩容过程中..
+            // CASE3：前置条件, 桶位的头节点一定不是null
+            // 条件成立表示当前桶位的头结点 为 FWD结点，表示目前map正处于扩容过程中..
             else if ((fh = f.hash) == MOVED)
+                // 看到fwd节点,其他节点有义务帮助当前map对象完成迁移数据的工作
+                // 扩容之后看
                 tab = helpTransfer(tab, f);
             //
             else if (onlyIfAbsent // check first node without acquiring lock
@@ -1101,21 +1104,37 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
                 return fv;
             // CASE4：当前桶位 可能是链表 也可能是 红黑树代理节点TreeBin
             else {
+                // 当插入key存在时,会将旧值赋值给oldVal,返回给put方法调用处
                 V oldVal = null;
+                // 使用sync 加锁“头结点”，理论上是 头结点
                 synchronized (f) {
-                    if (tabAt(tab, i) == f) {
+                    // 为什么又要对比一下，看当前的头结点 是否是 之前获取的头结点
+                    // 为了避免其他线程将该桶位的头结点修改掉，导致当前线程从 sync加锁 就有问题了，之后的所有操作无意义
+                    if (tabAt(tab, i) == f) { // 条件成立, 说明加锁对象没有问题, 可以进入...
+                        // 条件成立，说明当前桶位时普通链表桶位
                         if (fh >= 0) {
+                            // 1. 当前插入key与链表当中所有元素的key都不一致时，当前插入的元素追加到链表的末尾，binCount表示链表的长度
+                            // 2. 当前插入key与链表中 某个元素的key 一致，当前插入操作时替换，binCount表示冲突位置（binCount - 1）
                             binCount = 1;
+                            // 迭代循环当前桶位的链表，e是每次循环处理节点
                             for (Node<K,V> e = f;; ++binCount) {
+                                // ek 当前循环节点的key
                                 K ek;
+                                // 条件一：e.hash == hash 成立，表示当前元素与插入节点的hash值一致
+                                // 条件二：(ek = e.key) == key || (ek != null && key.equals(ek))
+                                //        成立，表示循环的当前节点与插入节点的key一致，发生冲突
                                 if (e.hash == hash &&
                                     ((ek = e.key) == key ||
                                      (ek != null && key.equals(ek)))) {
+                                    // 将当前循环元素的值赋给oldVal
                                     oldVal = e.val;
                                     if (!onlyIfAbsent)
                                         e.val = value;
                                     break;
                                 }
+                                // 当前元素与插入元素的key不一致，会走后面程序
+                                // 1. 更新循环处理节点为 当前节点的下一个节点
+                                // 2. 判断下一个节点是否为null，若是，说明当前节点已经是尾节点，需要在尾节点后追加新节点
                                 Node<K,V> pred = e;
                                 if ((e = e.next) == null) {
                                     pred.next = new Node<K,V>(hash, key, value);
@@ -1123,11 +1142,17 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
                                 }
                             }
                         }
+                        // 前置条件，该桶位不是链表
+                        // 条件成立，当前桶位是 红黑树代理节点TreeBin
                         else if (f instanceof TreeBin) {
+                            // p 表示红黑树中有与当前要插入节点的key有冲突的话，则putTreeVal方法 会返回冲突节点的引用
                             Node<K,V> p;
+                            // 强制设置binCount为 2，因为binCount <= 1 有其他含义，故设置为2
                             binCount = 2;
+                            // 条件一：成立，说明当前插入节点的key与红黑树中某个节点的key一致，冲突了
                             if ((p = ((TreeBin<K,V>)f).putTreeVal(hash, key,
                                                            value)) != null) {
+                                // 将冲突节点的值赋给 oldVal
                                 oldVal = p.val;
                                 if (!onlyIfAbsent)
                                     p.val = value;
@@ -1137,15 +1162,21 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
                             throw new IllegalStateException("Recursive update");
                     }
                 }
+                // 当前桶位不为null，可能是红黑树，也可能是链表
                 if (binCount != 0) {
+                    // 如果binCount >= 8 表示处理的桶位一定是链表
                     if (binCount >= TREEIFY_THRESHOLD)
+                        // 调用树化方法
                         treeifyBin(tab, i);
+                    // 说明当前线程插入的数据key与原有的数据k-v发生冲突，需要将原有的数据返回给调用出处
                     if (oldVal != null)
                         return oldVal;
                     break;
                 }
             }
         }
+        // 1. 统计当前table一共有多少数据
+        // 2. 判断是否达到扩容阈值标准，触发扩容
         addCount(1L, binCount);
         return null;
     }
