@@ -2379,7 +2379,8 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * Must be negative when shifted left by RESIZE_STAMP_SHIFT.
      * 16 -> 32
      * numberOfLeadingZeros(16) => 1 0000 => 27 => 0000 0000 0001 1011
-     * (1 << (RESIZE_STAMP_BITS - 1)) => 1000 0000 0000 0000 => 65536
+     * |
+     * (1 << (RESIZE_STAMP_BITS - 1)) => 1000 0000 0000 0000 => 32768
      * --------------------------------------------------
      * 0000 0000 0001 1011
      * 1000 0000 0000 0000
@@ -2450,35 +2451,110 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * @param check if <0, don't check resize, if <= 1 only check if uncontended
      */
     private final void addCount(long x, int check) {
+        // cs 表示LongAdder.cells
+        // b 表示LongAdder.base
+        // s 表示当前map.table的元素数量
         CounterCell[] cs; long b, s;
+        // 条件1：true->表示cells已经初始化了，当前线程应该去使用hash寻址找到合适的额cell，去累加数据
+        //       false->表示当前线程应该将数据累加到base
+        // 条件2：false->表示写base成功，数据累加到base中了，当前竞争不激烈，不需要创建cells
+        //       true->表示写base失败，与其他线程在base上发生了竞争，当前线程应该去尝试创建cells
         if ((cs = counterCells) != null ||
             !U.compareAndSetLong(this, BASECOUNT, b = baseCount, s = b + x)) {
+            // 有几种情况进入 if块？
+            // 1. true->表示cells已经初始化了，当前线程应该去使用hash寻址找到合适的额cell，去累加数据
+            // 2. true->表示写base失败，与其他线程在base上发生了竞争，当前线程应该去尝试创建cells
+
+            // c 表示当前线程hash命中的cell
+            // v 表示当前线程写cell时的期望值
+            // m 表示当前cells数组的长度
             CounterCell c; long v; int m;
+            // uncontended = true 表示未发生竞争，false 发生竞争
             boolean uncontended = true;
+            // 条件1：cs == null || (m = cs.length - 1) < 0
+            //      true-> 表示当前线程通过 写base竞争失败后，进入if块，就需要调用fullAddCount方法扩容 或者 重试 LongAdder.longAccumulate
+            // 条件2：c = cs[ThreadLocalRandom.getProbe() & m]) == null  前置条件：cells已经初始化
+            //      true-> 表示当前线程命中的cell为空，需要当前线程进入fullAddCount方法进行初始化cell，放入到当前位置
+            // 条件3：!(uncontended = U.compareAndSetLong(c, CELLVALUE, v = c.value, v + x))
+            //      false-> 取反后得到false，表示当前线程使用cas方式更新当前命中的cell成功
+            //      true-> 取反后得到true，表示当前线程使用cas方式更新失败，需要进入fullAddCount进行重试 或者 扩容 cells
             if (cs == null || (m = cs.length - 1) < 0 ||
                 (c = cs[ThreadLocalRandom.getProbe() & m]) == null ||
                 !(uncontended =
                   U.compareAndSetLong(c, CELLVALUE, v = c.value, v + x))) {
-                fullAddCount(x, uncontended);
+                fullAddCount(x, uncontended); // 耗时多
+                // 考虑到fullAddCount里面处理的事情比较累，就让当前线程 不参与到 扩容相关的逻辑了，直接返回到调用点。
                 return;
             }
             if (check <= 1)
                 return;
+            // 获取房钱散列表的元素个数，期望值
             s = sumCount();
         }
+        // 表示一定是一个put操作调用的addCount
         if (check >= 0) {
+            // tab 表示map.table
+            // nt 表示map.nextTable
+            // n 表示map.table数组的长度
+            // sc 表示sizeCtl的临时值
             Node<K,V>[] tab, nt; int n, sc;
+
+            /**
+             * sizeCtl < 0
+             *  -- 1. -1表示当前table正在初始化(有现成在创建table数组), 当前线程需要自旋等待
+             *  2. 表示当前map正在进行扩容 高16位表示: 扩容的标识戳 低16位表示: (1 + nThread) 当前参与并发扩容的线程数量
+             *
+             * -- sizeCtl = 0, 表示创建table数组时, 使用DEFAULT_CAPATCITY
+             *
+             * sizeCtl > 0
+             *  -- 1. 如果table未初始化, 表示初始化大小
+             *  2. 如果table已经初始化, 表示下次扩容时的 触发条件(阈值)
+             */
+
+            // 自旋
+            // 条件1：s >= (long)(sc = sizeCtl)
+            //          true-> 1. 当前sizeCtl是一个负数，表示正在扩容中
+            //                 2. 当前sizeCtl是一个正数，表示扩容阈值
+            //          false-> 表示当前table尚未达到扩容条件
+            // 条件2：(tab = table) != null
+            //         恒成立
+            // 条件3：(n = tab.length) < MAXIMUM_CAPACITY
+            //         true-> 表示当前table长度必须小于最大限制，才能进行扩容
             while (s >= (long)(sc = sizeCtl) && (tab = table) != null &&
                    (n = tab.length) < MAXIMUM_CAPACITY) {
+
+                // 扩容批次唯一标识戳
+                // 16 -> 32 扩容 标识为：1000 0000 0001 1011
                 int rs = resizeStamp(n);
+
+                // sc < 0 表示当前table正在扩容
+                //        当前线程应该协助table完成扩容
                 if (sc < 0) {
+                    // 条件1：(sc >>> RESIZE_STAMP_SHIFT) != rs
+                    //      true 表示当前线程获取到的扩容唯一标识 不是 本批次扩容
+                    //      false 表示当前线程获取到的扩容唯一标识 是 本批次扩容
+                    // 条件2：JDK1.8 中bug_jira已提，sc == (rs << 16) + 1
+                    //       true 扩容完毕，当前线程不需要再参与进来了
+                    //       false 扩容还在进行中，当前线程可以参与
+                    // 条件3：sc == (rs << 16) + MAX_RESIZERS
+                    //       true 当前参与并发扩容的线程达到了最大值65535 - 1
+                    //       false 表示当前线程可以参与扩容
+                    // 条件4：(nt = nextTable) == null
+                    //      true 本次扩容结束
+                    //      false 扩容正在进行中
+
                     if ((sc >>> RESIZE_STAMP_SHIFT) != rs || sc == rs + 1 ||
                         sc == rs + MAX_RESIZERS || (nt = nextTable) == null ||
                         transferIndex <= 0)
                         break;
+                    // 前置条件：当前table正在进行扩容中...当前线程有机会参与扩容
+                    // 条件成立：说明当前线程成功参与到扩容任务中，并且将sc低16位值加1，表示多了一个线程参与工作
+                    // 条件失败：说明参与工作的线程比较多，cas修改失败了，下次自旋 大概率还会走到这里
                     if (U.compareAndSetInt(this, SIZECTL, sc, sc + 1))
                         transfer(tab, nt);
                 }
+                // 1000 0000 0001 1011 0000 0000 0000 0000 + 2 => 1000 0000 0001 1011 0000 0000 0000 0010
+                // 条件成立，说明当前线程是触发扩容的第一个线程，在transfer方法需要做一些扩容准备工作
                 else if (U.compareAndSetInt(this, SIZECTL, sc,
                                              (rs << RESIZE_STAMP_SHIFT) + 2))
                     transfer(tab, null);
