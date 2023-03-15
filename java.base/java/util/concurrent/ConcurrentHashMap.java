@@ -2549,14 +2549,17 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
                         break;
                     // 前置条件：当前table正在进行扩容中...当前线程有机会参与扩容
                     // 条件成立：说明当前线程成功参与到扩容任务中，并且将sc低16位值加1，表示多了一个线程参与工作
-                    // 条件失败：说明参与工作的线程比较多，cas修改失败了，下次自旋 大概率还会走到这里
+                    // 条件失败：1. 当前有很多线程都在此处尝试修改sizeCtl，有其他一个线程修改成功了，导致你的sc期望值与内存中的值不一致 修改失败
+                    //          2. transfer任务内部的线程也修改了sizeCtl
                     if (U.compareAndSetInt(this, SIZECTL, sc, sc + 1))
+                        // 协助扩容线程，持有nextTable参数
                         transfer(tab, nt);
                 }
                 // 1000 0000 0001 1011 0000 0000 0000 0000 + 2 => 1000 0000 0001 1011 0000 0000 0000 0010
                 // 条件成立，说明当前线程是触发扩容的第一个线程，在transfer方法需要做一些扩容准备工作
                 else if (U.compareAndSetInt(this, SIZECTL, sc,
                                              (rs << RESIZE_STAMP_SHIFT) + 2))
+                    // 触发扩容条件的线程，不持有nextTable参数
                     transfer(tab, null);
                 s = sumCount();
             }
@@ -2628,11 +2631,18 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
      * above for explanation.
      */
     private final void transfer(Node<K,V>[] tab, Node<K,V>[] nextTab) {
+        // n 扩容之前table数组的长度
+        // stride 分配给线程任务的步长
         int n = tab.length, stride;
+        // 方便讲解，stride 固定为 16
         if ((stride = (NCPU > 1) ? (n >>> 3) / NCPU : n) < MIN_TRANSFER_STRIDE)
             stride = MIN_TRANSFER_STRIDE; // subdivide range
+
+        // 条件成立：表示当前线程是触发本次扩容的线程，需要做一些准备工作
+        // 条件不成立：表示当前线程是协助扩容的线程...
         if (nextTab == null) {            // initiating
             try {
+                // 创建了一个比扩容之前大了1倍的table
                 @SuppressWarnings("unchecked")
                 Node<K,V>[] nt = (Node<K,V>[])new Node<?,?>[n << 1];
                 nextTab = nt;
@@ -2640,33 +2650,71 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
                 sizeCtl = Integer.MAX_VALUE;
                 return;
             }
+            // 赋值给对象属性 nextTable，方便协助扩容线程 拿到新表
             nextTable = nextTab;
+            // 记录迁移数据整体位置的一个标记，index计数是从1开始计算的
             transferIndex = n;
         }
+        // 表示新数组的长度
         int nextn = nextTab.length;
+        // fwd节点，当某个桶位数据处理完毕之后，将次此桶位设置为fwd节点，其他写线程 或 读线程看到后，会有不同逻辑
         ForwardingNode<K,V> fwd = new ForwardingNode<K,V>(nextTab);
+        // 推进标记
         boolean advance = true;
+        // 完成标记
         boolean finishing = false; // to ensure sweep before committing nextTab
+        // i 表示分配给当前线程任务，执行到的桶位
+        // bound 表示分配给当前线程任务的下界限制
+        // 自旋
         for (int i = 0, bound = 0;;) {
+            // f 桶位的头结点
+            // fh 头结点的hash
             Node<K,V> f; int fh;
+
+            /**
+             * 1. 给当前线程分配任务区间
+             * 2. 维护当前线程任务进度（i 表示当前处理的桶位）
+             * 3. 维护map对象全局范围内的进度
+             */
             while (advance) {
+                // nextIndex 分配任务的开始下标
+                // nextBound 分配任务的结束下标
                 int nextIndex, nextBound;
+
+                // CASE 1:
+                // 条件一: --i >= bound
+                // 成立: 表示当前线程的任务尚未完成, 还有相应的区间的桶位要处理, --i 就是让当前线程处理下一个 桶位
+                // 不成立: 表示当前线程任务已完成 或 未分配
                 if (--i >= bound || finishing)
                     advance = false;
+                // CASE 2:
+                // 前置条件: 当前线程任务已完成 或 未分配
+                // 条件成立: 表示对象全局范围内的桶位都分配完毕了, 没有区间可分配了, 设置当前线程的i为-1 跳出循环后, 执行退出迁移任务相关的程序
+                // 条件不成立: 表示对象全局范围内的桶位尚未分配完毕, 还有区间可以分配
                 else if ((nextIndex = transferIndex) <= 0) {
                     i = -1;
                     advance = false;
                 }
+                // CASE 3:
+                // 前置条件: 1. 当前线程需要任务分配区间 2. 全局范围内还有桶位尚未迁移
+                // 条件成立: 表示给当前线程分配任务成功
+                // 条件失败: 表示分配给当前当前线程失败, 应该是与其他线程发生了竞争失败
                 else if (U.compareAndSetInt
                          (this, TRANSFERINDEX, nextIndex,
                           nextBound = (nextIndex > stride ?
                                        nextIndex - stride : 0))) {
+                    //
                     bound = nextBound;
                     i = nextIndex - 1;
                     advance = false;
                 }
             }
+
+            /**处理线程任务完成后，退出transfer方法的逻辑*/
+            // 条件1: i < 0
+            // 成立: 表示当前线程未分配到任务
             if (i < 0 || i >= n || i + n >= nextn) {
+                // 保存sizeCtl
                 int sc;
                 if (finishing) {
                     nextTable = null;
@@ -2674,13 +2722,20 @@ public class ConcurrentHashMap<K,V> extends AbstractMap<K,V>
                     sizeCtl = (n << 1) - (n >>> 1);
                     return;
                 }
+                // 条件成立: 说明设置sizeCtl 低16位 减1 成功，当前线程可以正常退出
+                // 条件失败：说明还有其他线程在与之竞争
                 if (U.compareAndSetInt(this, SIZECTL, sc = sizeCtl, sc - 1)) {
+                    // 1000 0000 0001 1011 0000 0000 0000 0000
+                    // 条件成立：说明当前线程不是最后一个退出transfer任务的线程
                     if ((sc - 2) != resizeStamp(n) << RESIZE_STAMP_SHIFT)
+                        // 正常退出
                         return;
                     finishing = advance = true;
                     i = n; // recheck before commit
                 }
             }
+
+            /**线程处理一个桶位数据的迁移工作, 处理完毕后设置 advance 为true, 表示继续推进, 然后就会回到for */
             else if ((f = tabAt(tab, i)) == null)
                 advance = casTabAt(tab, i, null, fwd);
             else if ((fh = f.hash) == MOVED)
